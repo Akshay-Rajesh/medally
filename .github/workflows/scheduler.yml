@@ -2,9 +2,12 @@ name: MedAlly Scheduler
 
 on:
   schedule:
-    - cron: '30 * * * *'   # every hour at :30
-    - cron: '0 0 * * *'    # midnight — seed reminders
+    - cron: '30 * * * *'   # every hour at :30 — check missed doses
+    - cron: '0 22 * * *'   # 22:00 UTC = midnight Germany time — seed next day
   workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   run-scheduler:
@@ -17,7 +20,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install supabase python-dotenv bcrypt
+        run: pip install supabase python-dotenv bcrypt apscheduler
 
       - name: Run scheduler
         env:
