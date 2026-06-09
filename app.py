@@ -27,10 +27,10 @@ st.markdown("""
 init_session()
 start_scheduler()
 
-# # DEBUG - force seed today's reminders
-# from utils.db import generate_todays_reminders
-# count = generate_todays_reminders()
-# st.sidebar.write(f"Reminders seeded: {count}")
+start_scheduler()
+# Seed today's reminders on every app startup
+from utils.db import generate_todays_reminders
+generate_todays_reminders()
 
 
 # ── Sidebar nav (only when logged in) ────────────────────────────────────────
