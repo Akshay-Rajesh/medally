@@ -1,8 +1,3 @@
-"""
-Scheduler that runs as a background thread inside Streamlit.
-Import and call start_scheduler() once from app.py
-"""
-import threading
 import logging
 import os
 import sys
@@ -10,9 +5,17 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
+load_dotenv()
 
+# Must configure logging before anything else
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout
+)
 log = logging.getLogger(__name__)
+
 _scheduler = None
 
 
@@ -25,12 +28,15 @@ def job_generate_reminders():
 def job_check_missed():
     from utils.db import get_overdue_unalerted_reminders, mark_reminder_alerted
     from utils.email import send_missed_medication_alert
+    log.info("Checking for missed doses...")
     overdue = get_overdue_unalerted_reminders(grace_minutes=30)
+    log.info(f"Found {len(overdue)} overdue reminder(s)")
     for reminder in overdue:
         try:
             med = reminder.get("medications", {})
             member = med.get("family_members", {})
             user = member.get("users", {})
+            log.info(f"Sending alert to {user.get('email')} for {member.get('name')}")
             sent = send_missed_medication_alert(
                 to_email=user.get("email"),
                 caregiver_name=user.get("name", "Caregiver"),
@@ -42,25 +48,29 @@ def job_check_missed():
             )
             if sent:
                 mark_reminder_alerted(reminder["id"])
-                log.info(f"Alert sent for reminder {reminder['id']}")
+                log.info(f"Alert sent successfully for reminder {reminder['id']}")
+            else:
+                log.error(f"Failed to send alert for reminder {reminder['id']}")
         except Exception as e:
-            log.error(f"Error: {e}")
+            log.error(f"Error processing reminder: {e}")
 
 
 def start_scheduler():
     global _scheduler
     if _scheduler and _scheduler.running:
-        return  # already running, don't start twice
+        return
+    from apscheduler.schedulers.background import BackgroundScheduler
     _scheduler = BackgroundScheduler(timezone="UTC")
     _scheduler.add_job(job_generate_reminders, "cron", hour=0, minute=0)
     _scheduler.add_job(job_check_missed, "interval", minutes=5)
     _scheduler.start()
-    # Seed today's reminders immediately on startup
     job_generate_reminders()
     log.info("Scheduler started")
 
+
 if __name__ == "__main__":
     if "--once" in sys.argv:
-        log.info("Running in --once mode")
+        log.info("=== Running in --once mode ===")
         job_generate_reminders()
         job_check_missed()
+        log.info("=== Done ===")
