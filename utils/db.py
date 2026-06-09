@@ -3,22 +3,31 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import bcrypt
 from datetime import datetime, date, timedelta
-import streamlit as st
 
 load_dotenv()
 
+# Streamlit is optional — not available in GitHub Actions
+try:
+    import streamlit as st
+    _has_streamlit = True
+except ImportError:
+    _has_streamlit = False
 
-@st.cache_resource
+
+def _get_secret(key: str) -> str:
+    if _has_streamlit:
+        try:
+            return st.secrets[key]
+        except Exception:
+            pass
+    return os.environ.get(key, "")
+
+
 def get_supabase() -> Client:
-    try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
-    except Exception:
-        url = os.environ.get("SUPABASE_URL", "")
-        key = os.environ.get("SUPABASE_KEY", "")
+    url = _get_secret("SUPABASE_URL")
+    key = _get_secret("SUPABASE_KEY")
     if not url or not key:
-        st.error("Supabase credentials not found. Check your .streamlit/secrets.toml file.")
-        st.stop()
+        raise ValueError("Supabase credentials not found. Check secrets.toml or environment variables.")
     return create_client(url, key)
 
 
@@ -37,6 +46,7 @@ def create_user(email: str, password: str, name: str) -> dict | None:
     except Exception as e:
         print(f"CREATE USER ERROR: {e}")
         return None
+
 
 def login_user(email: str, password: str) -> dict | None:
     db = get_supabase()
@@ -111,7 +121,6 @@ def deactivate_medication(med_id: str):
 # ── Reminders ─────────────────────────────────────────────────────────────────
 
 def get_todays_reminders(family_member_id: str) -> list:
-    """Return today's reminders for a family member with medication name joined."""
     db = get_supabase()
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
@@ -120,13 +129,11 @@ def get_todays_reminders(family_member_id: str) -> list:
              .gte("scheduled_time", today_start.isoformat())
              .lt("scheduled_time", today_end.isoformat())
              .execute())
-    # Filter to this family member
     return [r for r in (res.data or [])
             if r.get("medications", {}).get("family_member_id") == family_member_id]
 
 
 def confirm_reminder(reminder_id: str, status: str):
-    """status: 'taken' or 'skipped'"""
     db = get_supabase()
     db.table("reminders").update({
         "status": status,
@@ -156,10 +163,9 @@ def get_adherence_stats(family_member_id: str, days: int = 7) -> dict:
     }
 
 
-# ── Scheduler helpers (used by worker) ───────────────────────────────────────
+# ── Scheduler helpers ─────────────────────────────────────────────────────────
 
 def generate_todays_reminders():
-    """Creates reminder rows for today. Safe to call multiple times — won't duplicate."""
     db = get_supabase()
     today = date.today()
     meds = (db.table("medications")
@@ -176,8 +182,6 @@ def generate_todays_reminders():
             scheduled = datetime.now().replace(
                 hour=hour, minute=minute, second=0, microsecond=0
             )
-            # Check for ANY reminder today at this exact time for this med
-            # regardless of status — prevents duplicates on every startup
             exists = (db.table("reminders")
                         .select("id")
                         .eq("medication_id", med["id"])
@@ -193,7 +197,6 @@ def generate_todays_reminders():
 
 
 def get_overdue_unalerted_reminders(grace_minutes: int = 30) -> list:
-    """Reminders past due + grace period, still pending, alert not yet sent."""
     db = get_supabase()
     cutoff = (datetime.now() - timedelta(minutes=grace_minutes)).isoformat()
     res = (db.table("reminders")
