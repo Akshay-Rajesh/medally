@@ -58,3 +58,9 @@ def start_scheduler():
     # Seed today's reminders immediately on startup
     job_generate_reminders()
     log.info("Scheduler started")
+
+if __name__ == "__main__":
+    if "--once" in sys.argv:
+        log.info("Running in --once mode")
+        job_generate_reminders()
+        job_check_missed()
