@@ -4,11 +4,25 @@ on:
   schedule:
     - cron: '30 * * * *'   # every hour at :30
     - cron: '0 0 * * *'    # midnight — seed reminders
-  workflow_dispatch:        # manual trigger from GitHub
+  workflow_dispatch:
 
 jobs:
   run-scheduler:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping app to keep alive
-        run: curl -s https://medally-app.streamlit.app/ > /dev/null
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install supabase python-dotenv bcrypt
+
+      - name: Run scheduler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python scheduler/worker.py --once
