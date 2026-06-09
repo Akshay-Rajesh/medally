@@ -159,7 +159,7 @@ def get_adherence_stats(family_member_id: str, days: int = 7) -> dict:
 # ── Scheduler helpers (used by worker) ───────────────────────────────────────
 
 def generate_todays_reminders():
-    """Called by scheduler at midnight — creates reminder rows for all active meds."""
+    """Creates reminder rows for today. Safe to call multiple times — won't duplicate."""
     db = get_supabase()
     today = date.today()
     meds = (db.table("medications")
@@ -176,13 +176,12 @@ def generate_todays_reminders():
             scheduled = datetime.now().replace(
                 hour=hour, minute=minute, second=0, microsecond=0
             )
-            # Avoid duplicates
+            # Check for ANY reminder today at this exact time for this med
+            # regardless of status — prevents duplicates on every startup
             exists = (db.table("reminders")
                         .select("id")
                         .eq("medication_id", med["id"])
-                        .gte("scheduled_time", today.isoformat())
-                        .lt("scheduled_time", (today + timedelta(days=1)).isoformat())
-                        .eq("status", "pending")
+                        .eq("scheduled_time", scheduled.isoformat())
                         .execute())
             if not exists.data:
                 db.table("reminders").insert({
