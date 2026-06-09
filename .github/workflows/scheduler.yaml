@@ -1,0 +1,14 @@
+name: MedAlly Scheduler
+
+on:
+  schedule:
+    - cron: '30 * * * *'   # every hour at :30
+    - cron: '0 0 * * *'    # midnight — seed reminders
+  workflow_dispatch:        # manual trigger from GitHub
+
+jobs:
+  run-scheduler:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping app to keep alive
+        run: curl -s https://medally-app.streamlit.app/ > /dev/null

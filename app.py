@@ -27,7 +27,6 @@ st.markdown("""
 init_session()
 start_scheduler()
 
-start_scheduler()
 # Seed today's reminders on every app startup
 from utils.db import generate_todays_reminders
 generate_todays_reminders()
