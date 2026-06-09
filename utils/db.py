@@ -179,8 +179,10 @@ def generate_todays_reminders():
             continue
         for t in med["times_of_day"]:
             hour, minute = map(int, t.split(":"))
-            scheduled = datetime.now().replace(
-                hour=hour, minute=minute, second=0, microsecond=0
+            # Store in UTC — subtract 2 hours for CEST (Germany summer time)
+            utc_hour = (hour - 2) % 24
+            scheduled = datetime.utcnow().replace(
+                hour=utc_hour, minute=minute, second=0, microsecond=0
             )
             exists = (db.table("reminders")
                         .select("id")
