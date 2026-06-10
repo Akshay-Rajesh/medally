@@ -179,24 +179,24 @@ def generate_todays_reminders():
             continue
         for t in med["times_of_day"]:
             hour, minute = map(int, t.split(":"))
-            # Store in UTC — subtract 2 hours for CEST (Germany summer time)
             utc_hour = (hour - 2) % 24
             scheduled = datetime.utcnow().replace(
                 hour=utc_hour, minute=minute, second=0, microsecond=0
             )
+            scheduled_iso = scheduled.isoformat()
+            # Check ALL statuses not just pending
             exists = (db.table("reminders")
                         .select("id")
                         .eq("medication_id", med["id"])
-                        .eq("scheduled_time", scheduled.isoformat())
+                        .eq("scheduled_time", scheduled_iso)
                         .execute())
             if not exists.data:
                 db.table("reminders").insert({
                     "medication_id": med["id"],
-                    "scheduled_time": scheduled.isoformat(),
+                    "scheduled_time": scheduled_iso,
                 }).execute()
                 created += 1
     return created
-
 
 def get_overdue_unalerted_reminders(grace_minutes: int = 30) -> list:
     db = get_supabase()
