@@ -62,9 +62,13 @@ def render():
             status = r["status"]
 
             # Parse time
+
             try:
+                from datetime import timezone, timedelta
                 dt = datetime.fromisoformat(r["scheduled_time"])
-                time_str = dt.strftime("%I:%M %p")
+                berlin_offset = timedelta(hours=2)
+                local_dt = dt.replace(tzinfo=timezone.utc) + berlin_offset
+                time_str = local_dt.strftime("%I:%M %p")
             except Exception:
                 time_str = r["scheduled_time"]
 
