@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# --- FLUTTER / MOBILE_APP SPECIFIC ---
+mobile_app/build/
+mobile_app/.dart_tool/
+mobile_app/.pub/
+mobile_app/android/.gradle/
+mobile_app/android/app/build/
+mobile_app/ios/Flutter/Flutter.framework/
+mobile_app/ios/Flutter/Flutter.podspec
+mobile_app/ios/Pods/
+mobile_app/ios/.symlinks/
