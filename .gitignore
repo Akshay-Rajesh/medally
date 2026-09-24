@@ -60,3 +60,4 @@ mobile_app/ios/Flutter/Flutter.framework/
 mobile_app/ios/Flutter/Flutter.podspec
 mobile_app/ios/Pods/
 mobile_app/ios/.symlinks/
+backend/med_tracker.db
