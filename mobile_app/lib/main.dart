@@ -17,10 +17,14 @@ const String baseUrl = "http://10.0.2.2:8000";
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     FlutterLocalNotificationsPlugin();
 
+// ==========================================
+// MODIFIED MAIN & APP ROOT FOR ZERO LAG
+// ==========================================
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // 1. Initialize Timezones
+  // 1. Initialize Timezones & Notifications
   tz.initializeTimeZones();
   try {
     final timeZoneName = await FlutterTimezone.getLocalTimezone();
@@ -29,7 +33,6 @@ void main() async {
     debugPrint('Could not get local timezone: $e');
   }
 
-  // 2. Initialize Local Notifications & Alarm plugin
   const AndroidInitializationSettings initializationSettingsAndroid =
       AndroidInitializationSettings('@mipmap/ic_launcher');
   const InitializationSettings initializationSettings =
@@ -42,22 +45,51 @@ void main() async {
 
   await Alarm.init();
 
+  // 2. PRE-LOAD CACHE BEFORE RENDERING APP (This kills the lag completely)
   final prefs = await SharedPreferences.getInstance();
   final int? savedPatientId = prefs.getInt('patient_id');
   final String? savedPatientName = prefs.getString('patient_name');
 
-  runApp(MyApp(savedPatientId: savedPatientId, savedPatientName: savedPatientName));
-}
+  List initialMeds = [];
+  Set<int> initialTakenIds = {};
 
-// ==========================================
-// ROOT APP WIDGET
-// ==========================================
+  if (savedPatientId != null) {
+    final todayStr = DateTime.now().toIso8601String().split('T')[0];
+    
+    // Load cached medications
+    final String? cachedMedsString = prefs.getString('cached_meds_$savedPatientId');
+    if (cachedMedsString != null) {
+      initialMeds = jsonDecode(cachedMedsString);
+    }
+
+    // Load cached taken status
+    final List<String>? cachedTaken = prefs.getStringList('taken_meds_${savedPatientId}_$todayStr');
+    if (cachedTaken != null) {
+      initialTakenIds = cachedTaken.map(int.parse).toSet();
+    }
+  }
+
+  runApp(MyApp(
+    savedPatientId: savedPatientId, 
+    savedPatientName: savedPatientName,
+    initialMeds: initialMeds,
+    initialTakenIds: initialTakenIds,
+  ));
+}
 
 class MyApp extends StatelessWidget {
   final int? savedPatientId;
   final String? savedPatientName;
+  final List initialMeds;
+  final Set<int> initialTakenIds;
   
-  const MyApp({super.key, this.savedPatientId, this.savedPatientName});
+  const MyApp({
+    super.key, 
+    this.savedPatientId, 
+    this.savedPatientName,
+    required this.initialMeds,
+    required this.initialTakenIds,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -65,7 +97,11 @@ class MyApp extends StatelessWidget {
       title: 'Medication Tracker MVP',
       theme: ThemeData(primarySwatch: Colors.teal),
       home: savedPatientId != null
-          ? PatientDashboard(user: {'id': savedPatientId, 'name': savedPatientName})
+          ? PatientDashboard(
+              user: {'id': savedPatientId, 'name': savedPatientName},
+              initialMeds: initialMeds,
+              initialTakenIds: initialTakenIds,
+            )
           : const WelcomeScreen(),
     );
   }
@@ -146,7 +182,7 @@ class _PatientCodeScreenState extends State<PatientCodeScreen> {
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
-        
+
         final prefs = await SharedPreferences.getInstance();
         await prefs.setInt('patient_id', data['id']);
         await prefs.setString('patient_name', data['name']);
@@ -154,14 +190,17 @@ class _PatientCodeScreenState extends State<PatientCodeScreen> {
         if (!mounted) return;
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => PatientDashboard(user: data)),
+          MaterialPageRoute(builder: (_) => PatientDashboard(user: data, initialMeds: const [], initialTakenIds: const <int>{},)),
         );
       } else {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid access code.')));
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
+      if (!mounted) return;
       setState(() => isLoading = false);
     }
   }
@@ -421,32 +460,44 @@ class _PatientMedicationsScreenState extends State<PatientMedicationsScreen> {
   void deleteMedication(int medId, String medName) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Confirm Deletion'),
         content: Text('Are you sure you want to delete "$medName"? This will remove it from ${widget.patientName}\'s app immediately.'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
             onPressed: () async {
-              Navigator.pop(context);
+              Navigator.pop(dialogContext); // close the dialog using ITS OWN context
+
               try {
                 await Alarm.stop(medId + 100000);
                 await flutterLocalNotificationsPlugin.cancel(id: medId);
 
                 final res = await http.delete(Uri.parse('$baseUrl/medications/$medId'));
+
+                if (!mounted) return; // guard BEFORE touching the screen's context
+
                 if (res.statusCode == 200) {
-                  if (!mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Medication deleted successfully.')),
                   );
                   fetchPatientMeds();
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Failed to delete medication.')),
+                  );
                 }
               } catch (e) {
                 debugPrint("Error deleting medication: $e");
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error: $e')),
+                  );
+                }
               }
             },
             child: const Text('Delete'),
@@ -493,7 +544,7 @@ class _PatientMedicationsScreenState extends State<PatientMedicationsScreen> {
 }
 
 // ==========================================
-// ADD MEDICATION & SCHEDULE BOTH NOTIFICATION & ALARM
+// ADD MEDICATION (With Multiple Schedule Times)
 // ==========================================
 
 class AddMedicationScreen extends StatefulWidget {
@@ -507,9 +558,11 @@ class AddMedicationScreen extends StatefulWidget {
 class _AddMedicationScreenState extends State<AddMedicationScreen> {
   final nameController = TextEditingController();
   final dosageController = TextEditingController();
-  final timeController = TextEditingController(text: "08:00");
+  
+  // List to hold multiple times instead of just one string
+  List<String> scheduleTimes = ["08:00"]; 
 
-  void _pickTime() async {
+  void _pickTime(int index) async {
     final TimeOfDay? picked = await showTimePicker(
       context: context,
       initialTime: TimeOfDay.now(),
@@ -518,7 +571,21 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       final hours = picked.hour.toString().padLeft(2, '0');
       final minutes = picked.minute.toString().padLeft(2, '0');
       setState(() {
-        timeController.text = "$hours:$minutes";
+        scheduleTimes[index] = "$hours:$minutes";
+      });
+    }
+  }
+
+  void _addTimeField() {
+    setState(() {
+      scheduleTimes.add("12:00"); // Default next time
+    });
+  }
+
+  void _removeTimeField(int index) {
+    if (scheduleTimes.length > 1) {
+      setState(() {
+        scheduleTimes.removeAt(index);
       });
     }
   }
@@ -543,7 +610,7 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
         scheduledDate = scheduledDate.add(const Duration(days: 1));
       }
 
-      // 1. Schedule Normal Push Notification at exact schedule time
+      // 1. Push Notification
       const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
         'medication_reminder_channel',
         'Medication Reminders',
@@ -555,14 +622,14 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       await flutterLocalNotificationsPlugin.zonedSchedule(
         id: notificationId,
         title: 'Time for medicine: $medicineName',
-        body: 'Dosage: $dosage',
+        body: 'Dosage: $dosage ($timeStr)',
         scheduledDate: scheduledDate,
         notificationDetails: const NotificationDetails(android: androidDetails),
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
         matchDateTimeComponents: DateTimeComponents.time,
       );
 
-      // 2. Schedule Persistent Audio Alarm 5 minutes later
+      // 2. Persistent Audio Alarm 2 minutes later
       final followUpDate = scheduledDate.add(const Duration(minutes: 2));
       final int alarmId = notificationId + 100000;
 
@@ -588,28 +655,36 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     }
   }
 
-  void save() async {
-    final res = await http.post(
-      Uri.parse('$baseUrl/medications'),
-      headers: {"Content-Type": "application/json"},
-      body: jsonEncode({
-        "patient_id": widget.patientId,
-        "medicine_name": nameController.text,
-        "dosage": dosageController.text,
-        "schedule_time": timeController.text,
-      }),
-    );
+  void saveAll() async {
+    // Loop through each selected time and create a separate backend entry & alarm
+    for (String time in scheduleTimes) {
+      try {
+        final res = await http.post(
+          Uri.parse('$baseUrl/medications'),
+          headers: {"Content-Type": "application/json"},
+          body: jsonEncode({
+            "patient_id": widget.patientId,
+            "medicine_name": nameController.text,
+            "dosage": dosageController.text,
+            "schedule_time": time,
+          }),
+        );
 
-    if (res.statusCode == 200 || res.statusCode == 201) {
-      final data = jsonDecode(res.body);
-      int medicationId = data['id'] ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000);
+        if (res.statusCode == 200 || res.statusCode == 201) {
+          final data = jsonDecode(res.body);
+          int medicationId = data['id'] ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000) + scheduleTimes.indexOf(time);
 
-      await _scheduleReminders(
-        nameController.text,
-        dosageController.text,
-        timeController.text,
-        medicationId,
-      );
+          // Update local cache if needed, and set reminders
+          await _scheduleReminders(
+            nameController.text,
+            dosageController.text,
+            time,
+            medicationId,
+          );
+        }
+      } catch (e) {
+        debugPrint("Error saving medication for time $time: $e");
+      }
     }
 
     if (!mounted) return;
@@ -622,21 +697,51 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       appBar: AppBar(title: const Text('Add Medication')),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
-        child: Column(
+        child: ListView(
           children: [
-            TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Medicine Name')),
+            TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Medicine Name (e.g. Diabetes Pill)')),
+            const SizedBox(height: 12),
             TextField(controller: dosageController, decoration: const InputDecoration(labelText: 'Dosage (e.g. 1 pill)')),
-            TextField(
-              controller: timeController,
-              readOnly: true,
-              onTap: _pickTime,
-              decoration: const InputDecoration(
-                labelText: 'Alarm Time (HH:MM)',
-                suffixIcon: Icon(Icons.access_time),
-              ),
-            ),
             const SizedBox(height: 20),
-            ElevatedButton(onPressed: save, child: const Text('Save & Set Alarms')),
+            const Text('Schedule Times:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 10),
+            
+            // Dynamic list of time pickers
+            ...scheduleTimes.asMap().entries.map((entry) {
+              int index = entry.key;
+              String time = entry.value;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10.0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.access_time),
+                        label: Text('Time ${index + 1}: $time', style: const TextStyle(fontSize: 16)),
+                        onPressed: () => _pickTime(index),
+                      ),
+                    ),
+                    if (scheduleTimes.length > 1)
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () => _removeTimeField(index),
+                      ),
+                  ],
+                ),
+              );
+            }),
+
+            TextButton.icon(
+              icon: const Icon(Icons.add),
+              label: const Text('Add Another Time Slot'),
+              onPressed: _addTimeField,
+            ),
+            const SizedBox(height: 30),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(50), backgroundColor: Colors.teal, foregroundColor: Colors.white),
+              onPressed: saveAll, 
+              child: const Text('Save All & Set Alarms', style: TextStyle(fontSize: 18)),
+            ),
           ],
         ),
       ),
@@ -645,31 +750,67 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
 }
 
 // ==========================================
-// PATIENT DASHBOARD
+// PATIENT DASHBOARD (Zero Flicker & Instant Local Cache)
 // ==========================================
 
 class PatientDashboard extends StatefulWidget {
   final Map<String, dynamic> user;
-  const PatientDashboard({super.key, required this.user});
+  final List initialMeds;
+  final Set<int> initialTakenIds;
+
+  const PatientDashboard({
+    super.key, 
+    required this.user,
+    required this.initialMeds,
+    required this.initialTakenIds,
+  });
 
   @override
   State<PatientDashboard> createState() => _PatientDashboardState();
 }
 
 class _PatientDashboardState extends State<PatientDashboard> {
-  List meds = [];
-  final Set<int> takenMedIds = {}; // Tracks meds marked as taken in this session
+  late List meds;
+  late Set<int> takenMedIds;
+  bool isSyncing = true; // true until first sync completes
 
   @override
   void initState() {
     super.initState();
-    fetchMeds();
+    meds = widget.initialMeds;
+    takenMedIds = widget.initialTakenIds;
+    syncWithBackend();
   }
 
-  void fetchMeds() async {
-    final res = await http.get(Uri.parse('$baseUrl/medications/${widget.user['id']}'));
-    if (res.statusCode == 200) {
-      setState(() => meds = jsonDecode(res.body));
+  void syncWithBackend() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = widget.user['id'];
+      final todayStr = DateTime.now().toIso8601String().split('T')[0];
+
+      final medsRes = await http.get(Uri.parse('$baseUrl/medications/$userId'));
+      if (medsRes.statusCode == 200) {
+        final freshMeds = jsonDecode(medsRes.body);
+        setState(() => meds = freshMeds);
+        await prefs.setString('cached_meds_$userId', jsonEncode(freshMeds));
+      }
+
+      final logsRes = await http.get(Uri.parse('$baseUrl/medications/logs/$userId'));
+      if (logsRes.statusCode == 200) {
+        final List logs = jsonDecode(logsRes.body);
+        Set<int> serverTaken = {};
+        for (var log in logs) {
+          if (log['status'] == 'TAKEN' && log['scheduled_time'].toString().startsWith(todayStr)) {
+            serverTaken.add(log['medication_id']);
+          }
+        }
+        setState(() => takenMedIds = serverTaken);
+        await prefs.setStringList('taken_meds_${userId}_$todayStr', takenMedIds.map((id) => id.toString()).toList());
+      }
+    } catch (e) {
+      debugPrint("Background sync error: $e");
+    } finally {
+      if (mounted) setState(() => isSyncing = false); // always flip, even on error
     }
   }
 
@@ -684,18 +825,19 @@ class _PatientDashboardState extends State<PatientDashboard> {
     final int medId = med['id'];
     final int alarmId = medId + 100000;
 
-    // 1. Stop the alarm and cancel notification immediately
     await Alarm.stop(alarmId);
     await flutterLocalNotificationsPlugin.cancel(id: medId);
 
-    // 2. Update local state to switch button to "Medicine Taken"
     setState(() {
       takenMedIds.add(medId);
     });
 
-    // 3. Call backend API to log compliance
+    final prefs = await SharedPreferences.getInstance();
+    final todayStr = DateTime.now().toIso8601String().split('T')[0];
+    await prefs.setStringList('taken_meds_${widget.user['id']}_$todayStr', takenMedIds.map((id) => id.toString()).toList());
+
     try {
-      final res = await http.post(
+      await http.post(
         Uri.parse('$baseUrl/medications/take'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
@@ -703,18 +845,6 @@ class _PatientDashboardState extends State<PatientDashboard> {
           "medication_id": medId,
         }),
       );
-
-      if (res.statusCode == 200) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Medicine marked as taken successfully!')),
-        );
-      } else {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Confirmed locally, sync pending.')),
-        );
-      }
     } catch (e) {
       debugPrint("Error syncing compliance log: $e");
     }
@@ -726,12 +856,25 @@ class _PatientDashboardState extends State<PatientDashboard> {
       appBar: AppBar(
         title: Text('Medicines for ${widget.user['name']}'),
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: fetchMeds),
-          IconButton(icon: const Icon(Icons.logout), onPressed: logoutPatient, tooltip: 'Unlink Device'),
+          IconButton(
+            icon: const Icon(Icons.refresh), 
+            onPressed: syncWithBackend,
+            tooltip: 'Refresh Status',
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout), 
+            onPressed: logoutPatient, 
+            tooltip: 'Unlink Device',
+          ),
         ],
       ),
       body: meds.isEmpty
-          ? const Center(child: Text('No active medicines scheduled. All good!', style: TextStyle(fontSize: 16)))
+          ? const Center(
+              child: Text(
+                'No active medicines scheduled. All good!', 
+                style: TextStyle(fontSize: 16, color: Colors.grey),
+              ),
+            )
           : ListView.builder(
               itemCount: meds.length,
               itemBuilder: (context, index) {
@@ -740,7 +883,7 @@ class _PatientDashboardState extends State<PatientDashboard> {
                 final bool isTaken = takenMedIds.contains(medId);
 
                 return Card(
-                  margin: const EdgeInsets.all(12),
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   elevation: 4,
                   child: Padding(
                     padding: const EdgeInsets.all(16.0),
@@ -750,32 +893,47 @@ class _PatientDashboardState extends State<PatientDashboard> {
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(med['medicine_name'], style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                            Text(
+                              med['medicine_name'], 
+                              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                            ),
                             const SizedBox(height: 5),
-                            Text('Dosage: ${med['dosage']}', style: const TextStyle(fontSize: 16, color: Colors.grey)),
-                            Text('Time: ${med['schedule_time']}', style: const TextStyle(fontSize: 18, color: Colors.teal, fontWeight: FontWeight.bold)),
+                            Text(
+                              'Dosage: ${med['dosage']}', 
+                              style: const TextStyle(fontSize: 16, color: Colors.grey),
+                            ),
+                            Text(
+                              'Time: ${med['schedule_time']}', 
+                              style: const TextStyle(fontSize: 18, color: Colors.teal, fontWeight: FontWeight.bold),
+                            ),
                           ],
                         ),
-                        isTaken
-                            ? ElevatedButton.icon(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.grey.shade300,
-                                  foregroundColor: Colors.grey.shade700,
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                                ),
-                                icon: const Icon(Icons.check_circle, color: Colors.green),
-                                label: const Text('Medicine Taken', style: TextStyle(fontSize: 16)),
-                                onPressed: null, // Disabled once clicked
+                        isSyncing
+                            ? const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(strokeWidth: 2),
                               )
-                            : ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.green,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                                ),
-                                onPressed: () => confirmMedicationTaken(med),
-                                child: const Text('I Ate', style: TextStyle(fontSize: 18)),
-                              ),
+                            : isTaken
+                                ? ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.grey.shade300,
+                                      foregroundColor: Colors.grey.shade700,
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                    ),
+                                    icon: const Icon(Icons.check_circle, color: Colors.green),
+                                    label: const Text('Medicine Taken', style: TextStyle(fontSize: 16)),
+                                    onPressed: null,
+                                  )
+                                : ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                                    ),
+                                    onPressed: () => confirmMedicationTaken(med),
+                                    child: const Text('I Ate', style: TextStyle(fontSize: 18)),
+                                  ),
                       ],
                     ),
                   ),

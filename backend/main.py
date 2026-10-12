@@ -59,6 +59,11 @@ class MedicationLog(Base):
     medication = relationship("Medication", back_populates="logs")
     patient = relationship("Patient", back_populates="logs")
 
+
+class MedicationTake(BaseModel):
+    patient_id: int
+    medication_id: int
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Family Med Tracker API")
@@ -186,3 +191,50 @@ def delete_medication(medication_id: int, db: Session = Depends(get_db)):
     db.delete(med)
     db.commit()
     return {"message": "Medication deleted successfully"}
+
+@app.post("/medications/take")
+def take_medication(data: MedicationTake, db: Session = Depends(get_db)):
+    # Verify medication exists
+    med = db.query(Medication).filter(Medication.id == data.medication_id).first()
+    if not med:
+        raise HTTPException(status_code=404, detail="Medication not found")
+    
+    # Create or update log entry for today
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # Check if a log already exists for this medication today
+    existing_log = db.query(MedicationLog).filter(
+        MedicationLog.medication_id == data.medication_id,
+        MedicationLog.scheduled_time.like(f"{today_str}%")
+    ).first()
+
+    if existing_log:
+        existing_log.status = "TAKEN"
+        existing_log.confirmed_at = datetime.now()
+    else:
+        new_log = MedicationLog(
+            medication_id=data.medication_id,
+            patient_id=data.patient_id,
+            scheduled_time=f"{today_str} {med.schedule_time}",
+            status="TAKEN",
+            confirmed_at=datetime.now()
+        )
+        db.add(new_log)
+    
+    db.commit()
+    return {"message": "Medication marked as taken successfully"}
+
+@app.get("/medications/logs/{patient_id}")
+def get_medication_logs(patient_id: int, db: Session = Depends(get_db)):
+    logs = db.query(MedicationLog).filter(MedicationLog.patient_id == patient_id).all()
+    return [
+        {
+            "id": log.id,
+            "medication_id": log.medication_id,
+            "patient_id": log.patient_id,
+            "scheduled_time": log.scheduled_time,
+            "status": log.status,
+            "confirmed_at": log.confirmed_at.isoformat() if log.confirmed_at else None
+        }
+        for log in logs
+    ]
