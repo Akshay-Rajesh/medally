@@ -12,7 +12,7 @@ import 'package:flutter_timezone/flutter_timezone.dart';
 // CONFIGURATION & GLOBAL INSTANCES
 // ==========================================
 
-const String baseUrl = "http://10.0.2.2:8000"; 
+const String baseUrl = "https://medally.onrender.com"; 
 
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     FlutterLocalNotificationsPlugin();
